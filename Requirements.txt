@@ -3,6 +3,8 @@ streamlit
 pandas
 numpy
 plotly
+plotly.graph_objects
+plotly.express
 scipy
 openpyxl
 EOF

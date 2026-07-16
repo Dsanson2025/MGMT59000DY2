@@ -10,10 +10,33 @@ import pandas as pd
 import numpy as np
 import altair as alt
 from datetime import datetime
-from scipy import stats
 import warnings
 
 warnings.filterwarnings("ignore")
+
+# ============================================================================
+# STATISTICAL FUNCTIONS (using NumPy only, no scipy)
+# ============================================================================
+
+def calculate_skewness(data):
+    """Calculate skewness using NumPy (Fisher-Pearson coefficient)."""
+    n = len(data)
+    mean = np.mean(data)
+    std = np.std(data, ddof=1)
+    if std == 0:
+        return 0
+    skewness = np.sum(((data - mean) / std) ** 3) / n
+    return skewness
+
+def calculate_kurtosis(data):
+    """Calculate excess kurtosis using NumPy."""
+    n = len(data)
+    mean = np.mean(data)
+    std = np.std(data, ddof=1)
+    if std == 0:
+        return 0
+    kurtosis = np.sum(((data - mean) / std) ** 4) / n - 3
+    return kurtosis
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -141,8 +164,8 @@ def calculate_statistics(series, name=""):
         'Q1 (25%)': valid_series.quantile(0.25),
         'Q3 (75%)': valid_series.quantile(0.75),
         'IQR': valid_series.quantile(0.75) - valid_series.quantile(0.25),
-        'Skewness': stats.skew(valid_series),
-        'Kurtosis': stats.kurtosis(valid_series),
+        'Skewness': calculate_skewness(valid_series.values),
+        'Kurtosis': calculate_kurtosis(valid_series.values),
         'Coeff. of Variation': (valid_series.std() / valid_series.mean() * 100) if valid_series.mean() != 0 else np.nan
     }
 
@@ -340,7 +363,7 @@ def page_segment_analysis(df):
                 'Mean Purchase': f"${segment_data['PurchaseAmount'].mean():,.2f}",
                 'Median Purchase': f"${segment_data['PurchaseAmount'].median():,.2f}",
                 'Std Dev': f"${segment_data['PurchaseAmount'].std():,.2f}",
-                'Skewness': f"{stats.skew(segment_data['PurchaseAmount']):.3f}",
+                'Skewness': f"{calculate_skewness(segment_data['PurchaseAmount'].values):.3f}",
                 'Min': f"${segment_data['PurchaseAmount'].min():,.2f}",
                 'Max': f"${segment_data['PurchaseAmount'].max():,.2f}",
                 'Avg Satisfaction': f"{segment_data['CustomerSatisfaction'].mean():.2f}"

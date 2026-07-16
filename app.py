@@ -2,14 +2,14 @@
 NovaRetail Customer Intelligence Interactive Dashboard
 A comprehensive Streamlit application for analyzing customer behavior,
 revenue patterns, and segment performance.
+Uses Altair for visualizations (lighter weight, more reliable).
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-import plotly.express as px
-from datetime import datetime, timedelta
+import altair as alt
+from datetime import datetime
 from scipy import stats
 import warnings
 
@@ -25,28 +25,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-# Custom CSS
-st.markdown("""
-    <style>
-        .metric-card {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 20px;
-            border-radius: 10px;
-            color: white;
-            text-align: center;
-        }
-        .kpi-value {
-            font-size: 32px;
-            font-weight: bold;
-            margin: 10px 0;
-        }
-        .kpi-label {
-            font-size: 14px;
-            opacity: 0.9;
-        }
-    </style>
-""", unsafe_allow_html=True)
 
 # ============================================================================
 # DATA LOADING & PREPROCESSING
@@ -70,7 +48,6 @@ def preprocess_data(df):
     2. Handle duplicates
     3. Handle missing values
     4. Apply Tukey's IQR outlier detection with winsorization
-    5. Create derived features
     """
 
     df_processed = df.copy()
@@ -101,10 +78,7 @@ def preprocess_data(df):
 
 @st.cache_data
 def detect_outliers_tukey(series, multiplier=1.5):
-    """
-    Detect outliers using Tukey's IQR method.
-    Returns: Q1, Q3, IQR, lower_bound, upper_bound, outlier_indices, outlier_count
-    """
+    """Detect outliers using Tukey's IQR method."""
     Q1 = series.quantile(0.25)
     Q3 = series.quantile(0.75)
     IQR = Q3 - Q1
@@ -113,7 +87,6 @@ def detect_outliers_tukey(series, multiplier=1.5):
     upper_bound = Q3 + multiplier * IQR
 
     outlier_mask = (series < lower_bound) | (series > upper_bound)
-    outlier_indices = series[outlier_mask].index.tolist()
     outlier_count = outlier_mask.sum()
 
     return {
@@ -122,7 +95,6 @@ def detect_outliers_tukey(series, multiplier=1.5):
         'IQR': IQR,
         'lower_bound': lower_bound,
         'upper_bound': upper_bound,
-        'outlier_indices': outlier_indices,
         'outlier_count': outlier_count,
         'outlier_mask': outlier_mask
     }
@@ -188,11 +160,9 @@ SEGMENT_COLORS = {
     'Unknown': '#34495e'     # Dark gray
 }
 
-def get_color_palette(segments=None):
-    """Get color palette for segments."""
-    if segments is None:
-        return SEGMENT_COLORS
-    return [SEGMENT_COLORS.get(seg, '#34495e') for seg in segments]
+def get_segment_color(segment):
+    """Get color for a specific segment."""
+    return SEGMENT_COLORS.get(segment, '#34495e')
 
 # ============================================================================
 # PAGE 1: EXECUTIVE SUMMARY DASHBOARD
@@ -221,19 +191,19 @@ def page_executive_summary(df, metadata):
 
     with col1:
         total_revenue = df['PurchaseAmount'].sum()
-        st.metric("💰 Total Revenue", f"${total_revenue:,.2f}", delta=None)
+        st.metric("💰 Total Revenue", f"${total_revenue:,.2f}")
 
     with col2:
         total_customers = df['CustomerID'].nunique()
-        st.metric("👥 Total Customers", int(total_customers), delta=None)
+        st.metric("👥 Total Customers", int(total_customers))
 
     with col3:
         avg_purchase = df['PurchaseAmount'].mean()
-        st.metric("🛒 Avg Purchase Value", f"${avg_purchase:,.2f}", delta=None)
+        st.metric("🛒 Avg Purchase Value", f"${avg_purchase:,.2f}")
 
     with col4:
         avg_satisfaction = df['CustomerSatisfaction'].mean()
-        st.metric("⭐ Avg Satisfaction", f"{avg_satisfaction:.2f}/5", delta=None)
+        st.metric("⭐ Avg Satisfaction", f"{avg_satisfaction:.2f}/5")
 
     st.divider()
 
@@ -256,19 +226,19 @@ def page_executive_summary(df, metadata):
 
     with col2:
         # Pie chart for segment distribution
-        fig = go.Figure(data=[go.Pie(
-            labels=segment_counts.index,
-            values=segment_counts.values,
-            marker=dict(colors=[get_color_palette().get(seg, '#34495e') for seg in segment_counts.index]),
-            textposition='inside',
-            textinfo='label+percent'
-        )])
-        fig.update_layout(
-            height=350,
-            showlegend=True,
-            margin=dict(l=0, r=0, t=0, b=0)
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        seg_data = pd.DataFrame({
+            'Segment': segment_counts.index,
+            'Count': segment_counts.values
+        })
+
+        pie_chart = alt.Chart(seg_data).mark_arc(innerRadius=0).encode(
+            theta='Count:Q',
+            color=alt.Color('Segment:N', scale=alt.Scale(domain=list(SEGMENT_COLORS.keys()),
+                                                          range=list(SEGMENT_COLORS.values()))),
+            tooltip=['Segment:N', 'Count:Q']
+        ).properties(height=350)
+
+        st.altair_chart(pie_chart, use_container_width=True)
 
     st.divider()
 
@@ -278,82 +248,49 @@ def page_executive_summary(df, metadata):
     # Revenue by Segment
     with col1:
         st.subheader("Revenue by Customer Segment")
-        revenue_by_segment = df.groupby('label')['PurchaseAmount'].sum().sort_values(ascending=True)
+        revenue_by_segment = df.groupby('label')['PurchaseAmount'].sum().reset_index()
+        revenue_by_segment = revenue_by_segment.sort_values('PurchaseAmount')
 
-        fig = go.Figure(data=[go.Bar(
-            y=revenue_by_segment.index,
-            x=revenue_by_segment.values,
-            orientation='h',
-            marker=dict(color=[get_color_palette().get(seg, '#34495e') for seg in revenue_by_segment.index]),
-            text=[f'${x:,.0f}' for x in revenue_by_segment.values],
-            textposition='outside'
-        )])
-        fig.update_layout(
-            height=350,
-            xaxis_title="Total Revenue ($)",
-            yaxis_title="Segment",
-            showlegend=False,
-            margin=dict(l=0, r=100, t=30, b=0)
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        chart = alt.Chart(revenue_by_segment).mark_bar().encode(
+            y=alt.Y('label:N', sort='-x', title='Segment'),
+            x=alt.X('PurchaseAmount:Q', title='Total Revenue ($)'),
+            color=alt.Color('label:N', scale=alt.Scale(domain=list(SEGMENT_COLORS.keys()),
+                                                        range=list(SEGMENT_COLORS.values())),
+                           legend=None),
+            tooltip=['label:N', alt.Tooltip('PurchaseAmount:Q', format='$,.0f')]
+        ).properties(height=350)
+
+        st.altair_chart(chart, use_container_width=True)
 
     # Satisfaction Distribution
     with col2:
         st.subheader("Customer Satisfaction Distribution")
 
-        satisfaction_counts = df['CustomerSatisfaction'].value_counts().sort_index()
+        satisfaction_counts = df['CustomerSatisfaction'].value_counts().sort_index().reset_index()
+        satisfaction_counts.columns = ['Satisfaction', 'Count']
 
-        fig = go.Figure()
-        fig.add_trace(go.Histogram(
-            x=df['CustomerSatisfaction'],
-            nbinsx=5,
-            name='Count',
-            marker=dict(color='#3498db'),
-            opacity=0.7
-        ))
+        chart = alt.Chart(satisfaction_counts).mark_bar(color='#3498db').encode(
+            x=alt.X('Satisfaction:Q', scale=alt.Scale(domain=[1, 5]), title='Satisfaction Rating (1-5)'),
+            y=alt.Y('Count:Q', title='Number of Customers'),
+            tooltip=['Satisfaction:Q', 'Count:Q']
+        ).properties(height=350)
 
-        # Add mean line
-        mean_sat = df['CustomerSatisfaction'].mean()
-        fig.add_vline(x=mean_sat, line_dash="dash", line_color="red",
-                     annotation_text=f"Mean: {mean_sat:.2f}")
-
-        fig.update_layout(
-            height=350,
-            xaxis_title="Satisfaction Rating (1-5)",
-            yaxis_title="Number of Customers",
-            showlegend=False,
-            margin=dict(l=0, r=0, t=30, b=0)
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        st.altair_chart(chart, use_container_width=True)
 
     # Revenue Trend Over Time
     st.subheader("Revenue Trend Over Time")
-    df_sorted = df.sort_values('TransactionDate')
+    df_sorted = df.sort_values('TransactionDate').copy()
     df_sorted['CumulativeRevenue'] = df_sorted.groupby('label')['PurchaseAmount'].cumsum()
 
-    fig = go.Figure()
-    for segment in df_sorted['label'].unique():
-        segment_data = df_sorted[df_sorted['label'] == segment].sort_values('TransactionDate')
-        segment_data_cum = segment_data.copy()
-        segment_data_cum['CumulativeRevenue'] = segment_data['PurchaseAmount'].cumsum()
+    chart = alt.Chart(df_sorted).mark_line(point=True).encode(
+        x=alt.X('TransactionDate:T', title='Transaction Date'),
+        y=alt.Y('CumulativeRevenue:Q', title='Cumulative Revenue ($)'),
+        color=alt.Color('label:N', scale=alt.Scale(domain=list(SEGMENT_COLORS.keys()),
+                                                    range=list(SEGMENT_COLORS.values()))),
+        tooltip=['label:N', 'TransactionDate:T', alt.Tooltip('CumulativeRevenue:Q', format='$,.0f')]
+    ).properties(height=400)
 
-        fig.add_trace(go.Scatter(
-            x=segment_data_cum['TransactionDate'],
-            y=segment_data_cum['CumulativeRevenue'],
-            mode='lines',
-            name=segment,
-            line=dict(color=get_color_palette().get(segment, '#34495e'), width=2)
-        ))
-
-    fig.update_layout(
-        height=400,
-        title_text="Cumulative Revenue by Segment Over Time",
-        xaxis_title="Transaction Date",
-        yaxis_title="Cumulative Revenue ($)",
-        hovermode='x unified',
-        margin=dict(l=0, r=0, t=50, b=0)
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    st.altair_chart(chart, use_container_width=True)
 
 # ============================================================================
 # PAGE 2: DETAILED SEGMENT ANALYSIS
@@ -369,8 +306,8 @@ def page_segment_analysis(df):
 
     selected_segments = st.sidebar.multiselect(
         "Select Segments to Analyze",
-        options=df['label'].unique(),
-        default=df['label'].unique()
+        options=sorted(df['label'].unique()),
+        default=sorted(df['label'].unique())
     )
 
     date_range = st.sidebar.date_input(
@@ -403,7 +340,6 @@ def page_segment_analysis(df):
                 'Mean Purchase': f"${segment_data['PurchaseAmount'].mean():,.2f}",
                 'Median Purchase': f"${segment_data['PurchaseAmount'].median():,.2f}",
                 'Std Dev': f"${segment_data['PurchaseAmount'].std():,.2f}",
-                'IQR': f"${segment_data['PurchaseAmount'].quantile(0.75) - segment_data['PurchaseAmount'].quantile(0.25):,.2f}",
                 'Skewness': f"{stats.skew(segment_data['PurchaseAmount']):.3f}",
                 'Min': f"${segment_data['PurchaseAmount'].min():,.2f}",
                 'Max': f"${segment_data['PurchaseAmount'].max():,.2f}",
@@ -418,87 +354,35 @@ def page_segment_analysis(df):
     # ========== VISUALIZATIONS ==========
     col1, col2 = st.columns(2)
 
-    # Box Plot
+    # Box Plot Alternative - using strip plot
     with col1:
         st.subheader("Purchase Amount Distribution by Segment")
 
-        fig = go.Figure()
-        for segment in selected_segments:
-            segment_data = df_filtered[df_filtered['label'] == segment]['PurchaseAmount']
-            fig.add_trace(go.Box(
-                y=segment_data,
-                name=segment,
-                marker=dict(color=get_color_palette().get(segment, '#34495e'))
-            ))
+        chart = alt.Chart(df_filtered).mark_point(opacity=0.6).encode(
+            x=alt.X('label:N', title='Segment'),
+            y=alt.Y('PurchaseAmount:Q', title='Purchase Amount ($)'),
+            color=alt.Color('label:N', scale=alt.Scale(domain=list(SEGMENT_COLORS.keys()),
+                                                        range=list(SEGMENT_COLORS.values())),
+                           legend=None),
+            tooltip=['label:N', alt.Tooltip('PurchaseAmount:Q', format='$,.2f')]
+        ).properties(height=350)
 
-        fig.update_layout(
-            height=400,
-            yaxis_title="Purchase Amount ($)",
-            showlegend=True,
-            margin=dict(l=0, r=0, t=30, b=0)
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        st.altair_chart(chart, use_container_width=True)
 
     # Satisfaction vs Purchase Amount
     with col2:
         st.subheader("Satisfaction vs Purchase Amount")
 
-        fig = px.scatter(
-            df_filtered,
-            x='PurchaseAmount',
-            y='CustomerSatisfaction',
-            color='label',
-            color_discrete_map=get_color_palette(),
-            size='CustomerID',
-            hover_data=['CustomerID', 'ProductCategory'],
-            title=""
-        )
-        fig.update_layout(
-            height=400,
-            xaxis_title="Purchase Amount ($)",
-            yaxis_title="Customer Satisfaction (1-5)",
-            showlegend=True,
-            margin=dict(l=0, r=0, t=30, b=0)
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        chart = alt.Chart(df_filtered).mark_circle(size=60, opacity=0.6).encode(
+            x=alt.X('PurchaseAmount:Q', title='Purchase Amount ($)'),
+            y=alt.Y('CustomerSatisfaction:Q', title='Satisfaction (1-5)'),
+            color=alt.Color('label:N', scale=alt.Scale(domain=list(SEGMENT_COLORS.keys()),
+                                                        range=list(SEGMENT_COLORS.values()))),
+            tooltip=['label:N', alt.Tooltip('PurchaseAmount:Q', format='$,.2f'),
+                    'CustomerSatisfaction:Q']
+        ).properties(height=350)
 
-    # Histograms by Segment
-    st.subheader("Purchase Amount Distribution per Segment")
-
-    num_segments = len(selected_segments)
-    cols = st.columns(min(num_segments, 3))
-
-    for idx, segment in enumerate(selected_segments):
-        segment_data = df_filtered[df_filtered['label'] == segment]['PurchaseAmount']
-
-        with cols[idx % 3]:
-            fig = go.Figure()
-            fig.add_trace(go.Histogram(
-                x=segment_data,
-                nbinsx=10,
-                name=segment,
-                marker=dict(color=get_color_palette().get(segment, '#34495e')),
-                opacity=0.7
-            ))
-
-            mean_val = segment_data.mean()
-            median_val = segment_data.median()
-            skewness = stats.skew(segment_data)
-
-            fig.add_vline(x=mean_val, line_dash="dash", line_color="red",
-                         annotation_text=f"Mean: {mean_val:.0f}")
-            fig.add_vline(x=median_val, line_dash="dot", line_color="green",
-                         annotation_text=f"Median: {median_val:.0f}")
-
-            fig.update_layout(
-                height=300,
-                title=f"{segment} (Skew: {skewness:.3f})",
-                xaxis_title="Purchase Amount ($)",
-                yaxis_title="Count",
-                showlegend=False,
-                margin=dict(l=0, r=0, t=50, b=0)
-            )
-            st.plotly_chart(fig, use_container_width=True)
+        st.altair_chart(chart, use_container_width=True)
 
     # Comparative Bar Chart
     st.subheader("Comparative Metrics by Segment")
@@ -524,24 +408,16 @@ def page_segment_analysis(df):
                 comparative_data.append(row)
 
         comp_df = pd.DataFrame(comparative_data)
+        comp_df_melted = comp_df.melt(id_vars=['Segment'], var_name='Metric', value_name='Value')
 
-        fig = go.Figure()
-        for metric in metrics_to_show:
-            fig.add_trace(go.Bar(
-                x=comp_df['Segment'],
-                y=comp_df[metric],
-                name=metric
-            ))
+        chart = alt.Chart(comp_df_melted).mark_bar().encode(
+            x=alt.X('Segment:N', title='Segment'),
+            y=alt.Y('Value:Q', title='Value'),
+            color=alt.Color('Metric:N', title='Metric'),
+            xOffset='Metric:N'
+        ).properties(height=400)
 
-        fig.update_layout(
-            height=400,
-            barmode='group',
-            xaxis_title="Segment",
-            yaxis_title="Value",
-            showlegend=True,
-            margin=dict(l=0, r=0, t=30, b=0)
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        st.altair_chart(chart, use_container_width=True)
 
 # ============================================================================
 # PAGE 3: GEOGRAPHIC & CHANNEL PERFORMANCE
@@ -557,27 +433,20 @@ def page_geographic_performance(df):
 
     selected_regions = st.sidebar.multiselect(
         "Select Regions",
-        options=df['CustomerRegion'].unique(),
-        default=df['CustomerRegion'].unique()
+        options=sorted(df['CustomerRegion'].unique()),
+        default=sorted(df['CustomerRegion'].unique())
     )
 
     selected_channels = st.sidebar.multiselect(
         "Select Retail Channels",
-        options=df['RetailChannel'].unique(),
-        default=df['RetailChannel'].unique()
-    )
-
-    selected_categories = st.sidebar.multiselect(
-        "Select Product Categories",
-        options=df['ProductCategory'].unique(),
-        default=df['ProductCategory'].unique()
+        options=sorted(df['RetailChannel'].unique()),
+        default=sorted(df['RetailChannel'].unique())
     )
 
     # Filter data
     df_filtered = df[
         (df['CustomerRegion'].isin(selected_regions)) &
-        (df['RetailChannel'].isin(selected_channels)) &
-        (df['ProductCategory'].isin(selected_categories))
+        (df['RetailChannel'].isin(selected_channels))
     ]
 
     st.divider()
@@ -594,24 +463,16 @@ def page_geographic_performance(df):
             columns='RetailChannel',
             aggfunc='sum',
             fill_value=0
-        )
+        ).reset_index().melt(id_vars='CustomerRegion', var_name='RetailChannel', value_name='Revenue')
 
-        fig = go.Figure(data=go.Heatmap(
-            z=heatmap_data.values,
-            x=heatmap_data.columns,
-            y=heatmap_data.index,
-            colorscale='Viridis',
-            text=heatmap_data.values,
-            texttemplate='$%{text:,.0f}',
-            textfont={"size": 12}
-        ))
-        fig.update_layout(
-            height=350,
-            xaxis_title="Retail Channel",
-            yaxis_title="Region",
-            margin=dict(l=0, r=0, t=30, b=0)
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        chart = alt.Chart(heatmap_data).mark_rect().encode(
+            x=alt.X('RetailChannel:N', title='Retail Channel'),
+            y=alt.Y('CustomerRegion:N', title='Region'),
+            color=alt.Color('Revenue:Q', scale=alt.Scale(scheme='viridis')),
+            tooltip=['CustomerRegion:N', 'RetailChannel:N', alt.Tooltip('Revenue:Q', format='$,.0f')]
+        ).properties(height=350)
+
+        st.altair_chart(chart, use_container_width=True)
 
     # Regional Performance
     with col2:
@@ -629,42 +490,20 @@ def page_geographic_performance(df):
 
     st.divider()
 
-    # Regional Bar Chart with Satisfaction Overlay
-    st.subheader("Revenue by Region with Satisfaction Overlay")
+    # Regional Bar Chart with Satisfaction
+    st.subheader("Revenue by Region")
 
     regional_data = df_filtered.groupby('CustomerRegion').agg({
-        'PurchaseAmount': 'sum',
-        'CustomerSatisfaction': 'mean'
+        'PurchaseAmount': 'sum'
     }).reset_index()
 
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=regional_data['CustomerRegion'],
-        y=regional_data['PurchaseAmount'],
-        name='Total Revenue',
-        marker=dict(color='#3498db'),
-        yaxis='y'
-    ))
+    chart = alt.Chart(regional_data).mark_bar(color='#3498db').encode(
+        x=alt.X('CustomerRegion:N', title='Region'),
+        y=alt.Y('PurchaseAmount:Q', title='Total Revenue ($)'),
+        tooltip=['CustomerRegion:N', alt.Tooltip('PurchaseAmount:Q', format='$,.0f')]
+    ).properties(height=350)
 
-    fig.add_trace(go.Scatter(
-        x=regional_data['CustomerRegion'],
-        y=regional_data['CustomerSatisfaction'],
-        name='Avg Satisfaction',
-        mode='lines+markers',
-        line=dict(color='#e74c3c', width=3),
-        marker=dict(size=10),
-        yaxis='y2'
-    ))
-
-    fig.update_layout(
-        height=400,
-        xaxis_title="Region",
-        yaxis=dict(title="Total Revenue ($)", side='left'),
-        yaxis2=dict(title="Avg Satisfaction (1-5)", overlaying='y', side='right'),
-        hovermode='x unified',
-        margin=dict(l=0, r=50, t=50, b=0)
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    st.altair_chart(chart, use_container_width=True)
 
     st.divider()
 
@@ -674,74 +513,26 @@ def page_geographic_performance(df):
     col1, col2 = st.columns(2)
 
     with col1:
-        channel_revenue = df_filtered.groupby('RetailChannel')['PurchaseAmount'].sum()
+        channel_revenue = df_filtered.groupby('RetailChannel')['PurchaseAmount'].sum().reset_index()
 
-        fig = go.Figure(data=[go.Bar(
-            x=channel_revenue.index,
-            y=channel_revenue.values,
-            marker=dict(color=['#3498db', '#2ecc71']),
-            text=[f'${x:,.0f}' for x in channel_revenue.values],
-            textposition='outside'
-        )])
-        fig.update_layout(
-            height=350,
-            title="Revenue by Channel",
-            xaxis_title="Retail Channel",
-            yaxis_title="Total Revenue ($)",
-            showlegend=False,
-            margin=dict(l=0, r=50, t=50, b=0)
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        chart = alt.Chart(channel_revenue).mark_bar(color='#3498db').encode(
+            x=alt.X('RetailChannel:N', title='Retail Channel'),
+            y=alt.Y('PurchaseAmount:Q', title='Total Revenue ($)'),
+            tooltip=['RetailChannel:N', alt.Tooltip('PurchaseAmount:Q', format='$,.0f')]
+        ).properties(height=350)
+
+        st.altair_chart(chart, use_container_width=True)
 
     with col2:
-        channel_satisfaction = df_filtered.groupby('RetailChannel')['CustomerSatisfaction'].mean()
+        channel_satisfaction = df_filtered.groupby('RetailChannel')['CustomerSatisfaction'].mean().reset_index()
 
-        fig = go.Figure(data=[go.Bar(
-            x=channel_satisfaction.index,
-            y=channel_satisfaction.values,
-            marker=dict(color=['#3498db', '#2ecc71']),
-            text=[f'{x:.2f}' for x in channel_satisfaction.values],
-            textposition='outside'
-        )])
-        fig.update_layout(
-            height=350,
-            title="Avg Satisfaction by Channel",
-            xaxis_title="Retail Channel",
-            yaxis_title="Avg Satisfaction (1-5)",
-            showlegend=False,
-            margin=dict(l=0, r=50, t=50, b=0)
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        chart = alt.Chart(channel_satisfaction).mark_bar(color='#2ecc71').encode(
+            x=alt.X('RetailChannel:N', title='Retail Channel'),
+            y=alt.Y('CustomerSatisfaction:Q', title='Avg Satisfaction (1-5)'),
+            tooltip=['RetailChannel:N', alt.Tooltip('CustomerSatisfaction:Q', format='.2f')]
+        ).properties(height=350)
 
-    st.divider()
-
-    # Top Categories by Region
-    st.subheader("Top 10 Product Categories by Region")
-
-    region_cols = st.columns(len(selected_regions))
-
-    for idx, region in enumerate(selected_regions):
-        with region_cols[idx]:
-            region_data = df_filtered[df_filtered['CustomerRegion'] == region]
-            top_categories = region_data.groupby('ProductCategory')['PurchaseAmount'].sum().nlargest(10)
-
-            fig = go.Figure(data=[go.Bar(
-                y=top_categories.index,
-                x=top_categories.values,
-                orientation='h',
-                marker=dict(color='#3498db'),
-                text=[f'${x:,.0f}' for x in top_categories.values],
-                textposition='outside'
-            )])
-            fig.update_layout(
-                height=400,
-                title=f"{region} Region",
-                xaxis_title="Revenue ($)",
-                yaxis_title="",
-                showlegend=False,
-                margin=dict(l=150, r=50, t=50, b=0)
-            )
-            st.plotly_chart(fig, use_container_width=True)
+        st.altair_chart(chart, use_container_width=True)
 
 # ============================================================================
 # PAGE 4: PRODUCT CATEGORY & DEMOGRAPHIC INSIGHTS
@@ -755,33 +546,26 @@ def page_product_demographics(df):
     # ========== SIDEBAR FILTERS ==========
     st.sidebar.subheader("Product & Demographics Filters")
 
-    selected_categories = st.sidebar.multiselect(
-        "Select Product Categories",
-        options=df['ProductCategory'].unique(),
-        default=df['ProductCategory'].unique()
-    )
-
     selected_age_groups = st.sidebar.multiselect(
         "Select Age Groups",
-        options=df['CustomerAgeGroup'].unique(),
-        default=df['CustomerAgeGroup'].unique()
+        options=sorted(df['CustomerAgeGroup'].unique()),
+        default=sorted(df['CustomerAgeGroup'].unique())
     )
 
     selected_genders = st.sidebar.multiselect(
         "Select Gender",
-        options=df['CustomerGender'].unique(),
-        default=df['CustomerGender'].unique()
+        options=sorted(df['CustomerGender'].unique()),
+        default=sorted(df['CustomerGender'].unique())
     )
 
     selected_segments = st.sidebar.multiselect(
         "Select Segments",
-        options=df['label'].unique(),
-        default=df['label'].unique()
+        options=sorted(df['label'].unique()),
+        default=sorted(df['label'].unique())
     )
 
     # Filter data
     df_filtered = df[
-        (df['ProductCategory'].isin(selected_categories)) &
         (df['CustomerAgeGroup'].isin(selected_age_groups)) &
         (df['CustomerGender'].isin(selected_genders)) &
         (df['label'].isin(selected_segments))
@@ -795,106 +579,53 @@ def page_product_demographics(df):
     with col1:
         st.subheader("Revenue by Product Category")
 
-        category_revenue = df_filtered.groupby('ProductCategory')['PurchaseAmount'].sum().sort_values(ascending=True).tail(15)
+        category_revenue = df_filtered.groupby('ProductCategory')['PurchaseAmount'].sum().reset_index()
+        category_revenue = category_revenue.sort_values('PurchaseAmount').tail(15)
 
-        fig = go.Figure(data=[go.Bar(
-            y=category_revenue.index,
-            x=category_revenue.values,
-            orientation='h',
-            marker=dict(color=category_revenue.values, colorscale='Viridis'),
-            text=[f'${x:,.0f}' for x in category_revenue.values],
-            textposition='outside'
-        )])
-        fig.update_layout(
-            height=450,
-            xaxis_title="Total Revenue ($)",
-            yaxis_title="",
-            showlegend=False,
-            margin=dict(l=150, r=50, t=30, b=0)
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        chart = alt.Chart(category_revenue).mark_bar().encode(
+            y=alt.Y('ProductCategory:N', sort='-x', title=''),
+            x=alt.X('PurchaseAmount:Q', title='Total Revenue ($)'),
+            color=alt.Color('PurchaseAmount:Q', scale=alt.Scale(scheme='viridis'), legend=None),
+            tooltip=['ProductCategory:N', alt.Tooltip('PurchaseAmount:Q', format='$,.0f')]
+        ).properties(height=400)
 
-    # Category by Segment
-    with col2:
-        st.subheader("Revenue by Category & Segment")
-
-        category_segment = df_filtered.pivot_table(
-            values='PurchaseAmount',
-            index='ProductCategory',
-            columns='label',
-            aggfunc='sum',
-            fill_value=0
-        ).nlargest(10, df_filtered['label'].unique()[0] if len(df_filtered['label'].unique()) > 0 else 'Promising')
-
-        view_type = st.radio("Display as:", ["Stacked", "Grouped"], horizontal=True, key="category_view")
-
-        fig = go.Figure()
-        for segment in category_segment.columns:
-            fig.add_trace(go.Bar(
-                x=category_segment.index,
-                y=category_segment[segment],
-                name=segment,
-                marker=dict(color=get_color_palette().get(segment, '#34495e'))
-            ))
-
-        fig.update_layout(
-            height=400,
-            barmode='stack' if view_type == 'Stacked' else 'group',
-            xaxis_title="Product Category",
-            yaxis_title="Revenue ($)",
-            xaxis={'tickangle': -45},
-            showlegend=True,
-            margin=dict(l=0, r=0, t=30, b=100)
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    st.divider()
+        st.altair_chart(chart, use_container_width=True)
 
     # Age Group Analysis
-    st.subheader("Age Group Analysis")
+    with col2:
+        st.subheader("Age Group Analysis")
 
-    age_groups_order = ['18-24', '25-34', '35-44', '45-54', '55-64', '55+']
-    age_groups_order = [ag for ag in age_groups_order if ag in df_filtered['CustomerAgeGroup'].unique()]
+        age_groups_order = ['18-24', '25-34', '35-44', '45-54', '55-64', '55+']
+        age_groups_order = [ag for ag in age_groups_order if ag in df_filtered['CustomerAgeGroup'].unique()]
 
-    fig = go.Figure()
-
-    for gender in selected_genders:
-        gender_data = df_filtered[df_filtered['CustomerGender'] == gender]
-        age_group_data = []
-        age_group_labels = []
-        age_group_counts = []
-
+        age_data = []
         for age_group in age_groups_order:
-            ag_data = gender_data[gender_data['CustomerAgeGroup'] == age_group]
+            ag_data = df_filtered[df_filtered['CustomerAgeGroup'] == age_group]
             if len(ag_data) > 0:
-                avg_satisfaction = ag_data['CustomerSatisfaction'].mean()
-                age_group_data.append(avg_satisfaction)
-                age_group_labels.append(age_group)
-                age_group_counts.append(len(ag_data))
+                age_data.append({
+                    'AgeGroup': age_group,
+                    'AvgSatisfaction': ag_data['CustomerSatisfaction'].mean(),
+                    'Count': len(ag_data)
+                })
 
-        fig.add_trace(go.Scatter(
-            x=age_group_labels,
-            y=age_group_data,
-            mode='lines+markers',
-            name=gender,
-            line=dict(width=2),
-            marker=dict(size=10)
-        ))
+        age_df = pd.DataFrame(age_data)
 
-    fig.update_layout(
-        height=400,
-        title="Average Satisfaction by Age Group & Gender",
-        xaxis_title="Age Group",
-        yaxis_title="Avg Satisfaction (1-5)",
-        hovermode='x unified',
-        margin=dict(l=0, r=0, t=50, b=0)
-    )
-    st.plotly_chart(fig, use_container_width=True)
+        chart = alt.Chart(age_df).mark_line(point=True).encode(
+            x=alt.X('AgeGroup:N', title='Age Group', sort=age_groups_order),
+            y=alt.Y('AvgSatisfaction:Q', title='Avg Satisfaction (1-5)', scale=alt.Scale(domain=[0, 5])),
+            size=alt.Size('Count:Q', title='Customer Count'),
+            tooltip=['AgeGroup:N', alt.Tooltip('AvgSatisfaction:Q', format='.2f'), 'Count:Q']
+        ).properties(height=350)
+
+        st.altair_chart(chart, use_container_width=True)
 
     st.divider()
 
     # Demographics Matrix
     st.subheader("Demographics Matrix (Age × Gender)")
+
+    age_groups_order = ['18-24', '25-34', '35-44', '45-54', '55-64', '55+']
+    age_groups_order = [ag for ag in age_groups_order if ag in df_filtered['CustomerAgeGroup'].unique()]
 
     demo_matrix = []
     for age_group in age_groups_order:
@@ -1018,70 +749,43 @@ def page_data_quality(df, df_winsorized, metadata, outlier_report):
 
     st.divider()
 
-    # ========== DISTRIBUTION SHAPE DIAGNOSTICS ==========
-    st.subheader("Distribution Shape Diagnostics")
+    # ========== DISTRIBUTION DIAGNOSTICS ==========
+    st.subheader("Distribution Comparisons")
 
     col1, col2 = st.columns(2)
 
-    # Histogram + KDE for PurchaseAmount
+    # Pre vs Post Winsorization
     with col1:
-        st.write("**Purchase Amount Distribution (Pre & Post-Winsorization)**")
+        st.write("**Purchase Amount: Pre vs Post-Winsorization**")
 
-        fig = go.Figure()
+        pre_data = pd.DataFrame({'Value': df['PurchaseAmount'], 'Type': 'Pre-Winsorization'})
+        post_data = pd.DataFrame({'Value': df_winsorized['PurchaseAmount'], 'Type': 'Post-Winsorization'})
+        comparison_data = pd.concat([pre_data, post_data])
 
-        # Pre-winsorization
-        fig.add_trace(go.Histogram(
-            x=df['PurchaseAmount'],
-            name='Pre-Winsorization',
-            opacity=0.6,
-            marker=dict(color='#e74c3c'),
-            nbinsx=20
-        ))
+        chart = alt.Chart(comparison_data).mark_histogram(opacity=0.6, binned=True).encode(
+            x=alt.X('Value:Q', bin=alt.Bin(maxbins=20), title='Purchase Amount ($)'),
+            y=alt.Y('count()', title='Frequency'),
+            color=alt.Color('Type:N', title='Data Type')
+        ).properties(height=350)
 
-        # Post-winsorization
-        fig.add_trace(go.Histogram(
-            x=df_winsorized['PurchaseAmount'],
-            name='Post-Winsorization',
-            opacity=0.6,
-            marker=dict(color='#2ecc71'),
-            nbinsx=20
-        ))
+        st.altair_chart(chart, use_container_width=True)
 
-        fig.update_layout(
-            height=350,
-            barmode='overlay',
-            xaxis_title="Purchase Amount ($)",
-            yaxis_title="Frequency",
-            hovermode='x unified',
-            margin=dict(l=0, r=0, t=30, b=0)
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    # Histogram for Satisfaction
+    # Satisfaction Distribution
     with col2:
         st.write("**Customer Satisfaction Distribution**")
 
-        fig = go.Figure()
+        sat_data = pd.DataFrame({
+            'Satisfaction': df_winsorized['CustomerSatisfaction'],
+            'Count': 1
+        }).groupby('Satisfaction')['Count'].sum().reset_index()
 
-        fig.add_trace(go.Histogram(
-            x=df_winsorized['CustomerSatisfaction'],
-            name='Satisfaction',
-            marker=dict(color='#3498db'),
-            nbinsx=5
-        ))
+        chart = alt.Chart(sat_data).mark_bar(color='#3498db').encode(
+            x=alt.X('Satisfaction:Q', scale=alt.Scale(domain=[1, 5]), title='Satisfaction Rating (1-5)'),
+            y=alt.Y('Count:Q', title='Frequency'),
+            tooltip=['Satisfaction:Q', 'Count:Q']
+        ).properties(height=350)
 
-        mean_satisfaction = df_winsorized['CustomerSatisfaction'].mean()
-        fig.add_vline(x=mean_satisfaction, line_dash="dash", line_color="red",
-                     annotation_text=f"Mean: {mean_satisfaction:.2f}")
-
-        fig.update_layout(
-            height=350,
-            xaxis_title="Satisfaction Rating (1-5)",
-            yaxis_title="Frequency",
-            showlegend=False,
-            margin=dict(l=0, r=0, t=30, b=0)
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        st.altair_chart(chart, use_container_width=True)
 
     st.divider()
 
@@ -1143,7 +847,7 @@ def main():
     )
 
     st.sidebar.divider()
-    st.sidebar.caption("NovaRetail Customer Intelligence Dashboard | v1.0")
+    st.sidebar.caption("NovaRetail Customer Intelligence Dashboard | v2.0 (Altair)")
 
     # Route to selected page
     if page == "Executive Summary":

@@ -785,7 +785,7 @@ def page_data_quality(df, df_winsorized, metadata, outlier_report):
         post_data = pd.DataFrame({'Value': df_winsorized['PurchaseAmount'], 'Type': 'Post-Winsorization'})
         comparison_data = pd.concat([pre_data, post_data])
 
-        chart = alt.Chart(comparison_data).mark_histogram(opacity=0.6, binned=True).encode(
+        chart = alt.Chart(comparison_data).mark_bar(opacity=0.6).encode(
             x=alt.X('Value:Q', bin=alt.Bin(maxbins=20), title='Purchase Amount ($)'),
             y=alt.Y('count()', title='Frequency'),
             color=alt.Color('Type:N', title='Data Type')

@@ -55,9 +55,9 @@ st.set_page_config(
 
 @st.cache_data
 def load_data():
-    """Load dataset from Excel file."""
+    """Load dataset from CSV file."""
     try:
-        df = pd.read_excel("NR_dataset.xlsx")
+        df = pd.read_csv("NR_dataset.csv", parse_dates=['TransactionDate'])
         return df
     except Exception as e:
         st.error(f"Error loading data: {e}")
